@@ -3,7 +3,6 @@ import pandas as pd
 import numpy as np
 import os
 import io
-from openpyxl.styles import numbers # Added back for formatting
 
 # --- Helper Function ---
 def parse_list(raw, is_multipliers=False):
@@ -51,12 +50,10 @@ def recalculate_state():
                 target_geo = normalize_geo(geo_val)
                 for sheet_name in gran.keys():
                     sheet_upper = str(sheet_name).strip().upper()
-                    # Check MAP sheet first, fallback to checking sheet name directly
                     mapped_geo = map_dict.get(sheet_upper, sheet_upper)
                     if normalize_geo(mapped_geo) == target_geo:
                         valid_sheets.append(sheet_name)
                 
-                # If we filtered for a Geo but found NO mapped sheets, throw a warning!
                 if not valid_sheets:
                     rule["geo_warning"] = True
 
@@ -76,10 +73,7 @@ def recalculate_state():
                         var_col = df.columns[cols_upper.index("VARIABLE")]
                         contrib_col = df.columns[cols_upper.index("CONTRIBUTION")]
                         
-                        # 1. Variable Match
                         mask = (df[var_col].astype(str).str.strip().str.upper() == gran_var)
-                        
-                        # 2. Time Period Match
                         if period_val != "All":
                             mask &= (df[contrib_col].astype(str).str.strip().str.upper() == target_period)
                         
@@ -88,8 +82,12 @@ def recalculate_state():
                             max_col = df.columns[cols_upper.index("MAX")] if "MAX" in cols_upper else None
                             
                             if min_col and max_col:
-                                df.loc[mask, min_col] = (pd.to_numeric(df.loc[mask, min_col], errors='coerce') * float(mult)).round(6)
-                                df.loc[mask, max_col] = (pd.to_numeric(df.loc[mask, max_col], errors='coerce') * float(mult)).round(6)
+                                # Pre-convert entire columns to numeric floats to safely accept decimal changes
+                                df[min_col] = pd.to_numeric(df[min_col], errors='coerce')
+                                df[max_col] = pd.to_numeric(df[max_col], errors='coerce')
+                                
+                                df.loc[mask, min_col] = (df.loc[mask, min_col] * float(mult)).round(6)
+                                df.loc[mask, max_col] = (df.loc[mask, max_col] * float(mult)).round(6)
                                 
                                 gran[sheet_name] = df
                                 routed_to_granular = True
@@ -100,6 +98,9 @@ def recalculate_state():
             else:
                 ads_var = orig_var if orig_var.endswith("_PMF") else orig_var + "_PMF"
                 if ads_var in ads.columns:
+                    # FIX: Cast the entire column to float64 globally before applying partial row slice multiplication
+                    ads[ads_var] = pd.to_numeric(ads[ads_var], errors='coerce')
+                    
                     ads_mask = pd.Series(True, index=ads.index)
                     if geo_val != "All":
                         ads_mask &= (ads[geo_col] == geo_val)
@@ -107,7 +108,7 @@ def recalculate_state():
                         ads_mask &= (ads[period_col] == period_val)
 
                     if ads_mask.any():
-                        ads.loc[ads_mask, ads_var] = (pd.to_numeric(ads.loc[ads_mask, ads_var], errors='coerce') * float(mult)).round(6)
+                        ads.loc[ads_mask, ads_var] = (ads.loc[ads_mask, ads_var] * float(mult)).round(6)
                         rule["ads_vars"].append(f"{ads_var} (x{mult})")
                     else:
                         rule["missed"].append(orig_var)
@@ -152,7 +153,6 @@ with col_up2:
     if gran_file is not None and st.session_state.gran_last_uploaded != gran_file.name:
         xl = pd.ExcelFile(gran_file)
         
-        # Find MAP sheet specifically
         map_sheet_name = next((s for s in xl.sheet_names if "map" in s.lower()), None)
         if map_sheet_name:
             map_df = pd.read_excel(gran_file, sheet_name=map_sheet_name, dtype=str)
@@ -161,7 +161,6 @@ with col_up2:
         else:
             st.session_state.map_df = None
             
-        # Load all standard sheets (excluding the map sheet to keep data pure)
         gran_dict = {s: pd.read_excel(gran_file, sheet_name=s) for s in xl.sheet_names if s != map_sheet_name}
         
         st.session_state.gran_original = gran_dict
@@ -296,25 +295,21 @@ if st.session_state.ads is not None:
             
             output_buffer = io.BytesIO()
             with pd.ExcelWriter(output_buffer, engine="openpyxl") as writer:
-                # 1. Write the map sheet back first if it exists
                 if st.session_state.map_df is not None:
                     st.session_state.map_df.to_excel(writer, sheet_name="MAP", index=False)
                 
-                # 2. Write the data sheets
                 for sheet_name, df_sheet in st.session_state.granular_sheets.items():
                     df_sheet.to_excel(writer, sheet_name=sheet_name, index=False)
                 
-                # 3. Apply explicit openpyxl formatting to MIN and MAX columns
+                from openpyxl.styles import numbers
                 for sheet_name in writer.book.sheetnames:
                     ws = writer.book[sheet_name]
                     if ws.max_row > 1:
-                        # Find the exact column index for MIN and MAX
                         header = [str(cell.value).strip().upper() if cell.value else "" for cell in ws[1]]
                         min_idx = header.index("MIN") + 1 if "MIN" in header else None
                         max_idx = header.index("MAX") + 1 if "MAX" in header else None
                         
                         if min_idx or max_idx:
-                            # Iterate through the rows and apply FORMAT_PERCENTAGE_00
                             for row in ws.iter_rows(min_row=2, max_row=ws.max_row):
                                 if min_idx and isinstance(row[min_idx - 1].value, (int, float)):
                                     row[min_idx - 1].number_format = numbers.FORMAT_PERCENTAGE_00
@@ -322,7 +317,6 @@ if st.session_state.ads is not None:
                                     row[max_idx - 1].number_format = numbers.FORMAT_PERCENTAGE_00
             
             output_bytes = output_buffer.getvalue()
-            
             st.download_button(
                 label="Download Modified Granular Spec (Excel)", 
                 data=output_bytes, 
