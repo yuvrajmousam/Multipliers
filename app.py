@@ -82,9 +82,9 @@ def recalculate_state():
                             max_col = df.columns[cols_upper.index("MAX")] if "MAX" in cols_upper else None
                             
                             if min_col and max_col:
-                                # Pre-convert entire columns to numeric floats to safely accept decimal changes
-                                df[min_col] = pd.to_numeric(df[min_col], errors='coerce')
-                                df[max_col] = pd.to_numeric(df[max_col], errors='coerce')
+                                # FIX 1: Force float type globally to safely accept decimal changes
+                                df[min_col] = pd.to_numeric(df[min_col], errors='coerce').astype(float)
+                                df[max_col] = pd.to_numeric(df[max_col], errors='coerce').astype(float)
                                 
                                 df.loc[mask, min_col] = (df.loc[mask, min_col] * float(mult)).round(6)
                                 df.loc[mask, max_col] = (df.loc[mask, max_col] * float(mult)).round(6)
@@ -98,8 +98,8 @@ def recalculate_state():
             else:
                 ads_var = orig_var if orig_var.endswith("_PMF") else orig_var + "_PMF"
                 if ads_var in ads.columns:
-                    # FIX: Cast the entire column to float64 globally before applying partial row slice multiplication
-                    ads[ads_var] = pd.to_numeric(ads[ads_var], errors='coerce')
+                    # FIX 2: Cast entire column to float globally before partial row slice multiplication
+                    ads[ads_var] = pd.to_numeric(ads[ads_var], errors='coerce').astype(float)
                     
                     ads_mask = pd.Series(True, index=ads.index)
                     if geo_val != "All":
